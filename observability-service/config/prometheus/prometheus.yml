@@ -1,0 +1,17 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'observability-platform'
+
+rule_files:
+  - '/etc/prometheus/alerts.yml'
+
+scrape_configs:
+  - job_name: 'otel-collector'
+    scrape_interval: 5s
+    honor_labels: true
+    static_configs:
+      - targets: ['otel-collector:8889']
+        labels:
+          source: 'open-telemetry'

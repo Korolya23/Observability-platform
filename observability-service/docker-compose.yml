@@ -1,0 +1,138 @@
+services:
+  # ============================================
+  # Observability Stack
+  # ============================================
+
+  # Prometheus - сбор и хранение метрик
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./config/prometheus/alerts.yml:/etc/prometheus/alerts.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - observability
+    restart: unless-stopped
+
+  # OpenTelemetry Collector - приём телеметрии от приложений
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.96.0
+    container_name: otel-collector
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./config/otel-collector/collector-config.yml:/etc/otel/config.yaml
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8889:8889"   # Prometheus exporter
+    depends_on:
+      - prometheus
+      - tempo
+    networks:
+      - observability
+    restart: unless-stopped
+
+  # Loki - агрегация и хранение логов
+  loki:
+    image: grafana/loki:2.9.5
+    container_name: loki
+    command: -config.file=/etc/loki/loki-config.yml
+    volumes:
+      - ./config/loki/loki-config.yml:/etc/loki/loki-config.yml
+      - loki_data:/loki
+    ports:
+      - "3100:3100"
+    networks:
+      - observability
+    restart: unless-stopped
+
+  # Promtail - сбор логов контейнеров
+  promtail:
+    image: grafana/promtail:2.9.5
+    container_name: promtail
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - ./config/promtail/promtail-config.yml:/etc/promtail/config.yml
+    command: -config.file=/etc/promtail/config.yml
+    networks:
+      - observability
+    restart: unless-stopped
+
+  # Tempo - хранение и поиск трейсов
+  tempo:
+    image: grafana/tempo:2.4.0
+    container_name: tempo
+    command: [ "-config.file=/etc/tempo/tempo-config.yml" ]
+    volumes:
+      - ./config/tempo/tempo-config.yml:/etc/tempo/tempo-config.yml
+      - tempo_data:/var/tempo
+    ports:
+      - "3200:3200"   # Только HTTP API
+    networks:
+      - observability
+    restart: unless-stopped
+
+  # Grafana - единый интерфейс визуализации
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: grafana
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_SECURITY_ALLOW_EMBEDDING=true
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    volumes:
+      - ./config/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
+      - ./config/grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml
+      - ./dashboards:/var/lib/grafana/dashboards
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - observability
+    restart: unless-stopped
+
+  # ============================================
+  # Test Application
+  # ============================================
+
+  app-service:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: app-service
+    environment:
+      - PORT=8080
+      - OTEL_SERVICE_NAME=app-service
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - OTEL_RESOURCE_ATTRIBUTES=service.namespace=demo
+      - OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED=true
+    ports:
+      - "8080:8080"
+    networks:
+      - observability
+    restart: unless-stopped
+    depends_on:
+      - otel-collector
+
+networks:
+  observability:
+    driver: bridge
+    name: observability
+
+volumes:
+  prometheus_data:
+  loki_data:
+  tempo_data:
+  grafana_data:
